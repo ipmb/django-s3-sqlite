@@ -118,6 +118,7 @@ class DatabaseWrapper(DatabaseWrapper):
                 ),
                 Metadata={"md5chksum": current_md5},
             )
+            self.db_hash = current_md5
             log.debug("Saved to remote DB!")
         except Exception as e:
             log.exception("An error occurred pushing the database to S3.")
