@@ -43,30 +43,28 @@ class DatabaseWrapper(DatabaseWrapper):
             else:
                 current_md5 = ""
             try:
-                # In general the ETag is the md5 of the file, in some cases it's
-                # not, and in that case we will just need to reload the file,
-                # I don't see any other way
-                obj_bytes = self.s3.Object(
-                    self.settings_dict["BUCKET"], self.settings_dict["NAME"],
-                ).get(IfNoneMatch=current_md5,)[
-                    "Body"
-                ]  # Will throw E on 304 or 404
+                obj = self.s3.Object(
+                    self.settings_dict["BUCKET"], self.settings_dict["NAME"]
+                )
+                obj.load()
+                try:
+                    remote_md5 = obj.metadata["md5chksum"]
+                except KeyError:
+                    remote_md5 = None
 
                 # Remote does not match local. Replace local copy.
-                with open(local_file_path, "wb") as f:
-                    file_bytes = obj_bytes.read()
-                    self.db_hash = _get_md5(file_bytes)
-                    f.write(file_bytes)
-                    log.debug("Database downloaded from S3.")
+                if remote_md5 != current_md5:
+                    self.db_hash = remote_md5
+                    obj_bytes = self.s3.Object(
+                        self.settings_dict["BUCKET"], self.settings_dict["NAME"],
+                    ).get()["Body"]
 
-            except botocore.exceptions.ClientError as e:
-                if e.response["Error"]["Code"] == "304":
-                    log.debug(
-                        "ETag matches md5 of local copy, using local copy of DB!",
-                    )
-                    self.db_hash = current_md5
+                    with open(local_file_path, "wb") as f:
+                        f.write(obj_bytes.read())
+                    log.debug("Database downloaded from S3.")
                 else:
-                    log.exception("Couldn't load remote DB object.")
+                    log.debug("Remote matches local md5:%s. Skipping download.", current_md5)
+                    self.db_hash = current_md5
             except Exception as e:
                 # Weird one
                 log.exception("An unexpected error occurred.")
@@ -113,7 +111,13 @@ class DatabaseWrapper(DatabaseWrapper):
         try:
             self.s3.Object(
                 self.settings_dict["BUCKET"], self.settings_dict["REMOTE_NAME"],
-            ).put(Body=file_bytes, ContentMD5=base64.b64encode(binascii.unhexlify(current_md5)).decode("utf-8"))
+            ).put(
+                Body=file_bytes,
+                ContentMD5=base64.b64encode(binascii.unhexlify(current_md5)).decode(
+                    "utf-8"
+                ),
+                Metadata={"md5chksum": current_md5},
+            )
             log.debug("Saved to remote DB!")
         except Exception as e:
             log.exception("An error occurred pushing the database to S3.")
